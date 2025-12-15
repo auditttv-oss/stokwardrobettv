@@ -1,71 +1,82 @@
-import React from 'react';
-import { ScanFeedback } from '../types';
+import React, { useState } from 'react';
+import { InventoryItem } from '../types';
 
-interface FeedbackDisplayProps {
-  feedback: ScanFeedback;
+interface InventoryTableProps {
+  items: InventoryItem[];
 }
 
-export const FeedbackDisplay: React.FC<FeedbackDisplayProps> = ({ feedback }) => {
-  const { status, message, item } = feedback;
-
-  if (status === 'IDLE') {
-    return (
-      <div className="h-48 rounded-xl bg-slate-100 border-2 border-dashed border-slate-300 flex flex-col items-center justify-center text-slate-400 mb-6">
-        <i className="fa-solid fa-barcode text-4xl mb-3"></i>
-        <p className="font-medium">Ready to Scan</p>
-      </div>
-    );
-  }
-
-  let bgColor = 'bg-slate-600';
-  let icon = 'fa-circle-question';
-  let titleText = message;
-
-  if (status === 'FOUND') {
-      bgColor = 'bg-emerald-600';
-      icon = 'fa-circle-check';
-  } else if (status === 'NOT_FOUND') {
-      bgColor = 'bg-rose-600';
-      icon = 'fa-circle-xmark';
-  } else if (status === 'DUPLICATE') {
-      bgColor = 'bg-amber-500'; // Yellow/Orange for warning
-      icon = 'fa-triangle-exclamation';
-      titleText = "SUDAH DI SO";
-  }
+export const InventoryTable: React.FC<InventoryTableProps> = ({ items }) => {
+  const [filter, setFilter] = useState('');
+  
+  const filteredItems = items.filter(item => 
+      item.barcode.toLowerCase().includes(filter.toLowerCase()) || 
+      item.item_name.toLowerCase().includes(filter.toLowerCase())
+  );
+  // Limit render agar ringan di HP
+  const displayItems = filteredItems.slice(0, 50);
 
   return (
-    <div className={`${bgColor} h-48 rounded-xl shadow-lg mb-6 flex flex-col items-center justify-center text-white transition-all duration-300 animate-fade-in relative overflow-hidden`}>
-      {/* Background pattern for visual interest */}
-      <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white to-transparent pointer-events-none"></div>
-      
-      <div className="flex items-center gap-3 mb-2 z-10">
-        <i className={`fa-solid ${icon} text-3xl`}></i>
-        <h2 className="text-4xl font-extrabold tracking-tight uppercase drop-shadow-md">
-          {titleText}
-        </h2>
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full">
+      <div className="p-3 border-b border-slate-100 flex flex-col gap-2 bg-slate-50 rounded-t-xl">
+        <div className="flex justify-between items-center">
+            <h3 className="font-semibold text-slate-700">Data Barang</h3>
+            <span className="text-xs font-bold bg-slate-200 text-slate-700 py-1 px-2 rounded">
+            {items.length} Total
+            </span>
+        </div>
+        <input 
+            type="text" 
+            placeholder="Cari nama / barcode..." 
+            className="px-3 py-2 border rounded-lg text-sm w-full focus:ring-2 focus:ring-blue-500 outline-none"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+        />
       </div>
       
-      {item ? (
-        <div className="text-center mt-2 px-4 z-10">
-          <p className="text-white text-lg font-medium drop-shadow-sm">{item.itemName}</p>
-          <div className="flex gap-3 justify-center mt-2 text-sm bg-black/20 py-1 px-3 rounded-full backdrop-blur-sm">
-            <span>{item.brand}</span>
-            <span className="opacity-50">|</span>
-            <span>{item.color}</span>
-            <span className="opacity-50">|</span>
-            <span className="font-mono font-bold">{item.barcode}</span>
-          </div>
-          {status === 'DUPLICATE' && (
-             <p className="mt-2 text-xs font-bold text-amber-900 bg-amber-200 inline-block px-2 py-1 rounded">
-                Scanned previously
-             </p>
-          )}
-        </div>
-      ) : (
-         <div className="text-center mt-2 px-4 z-10">
-            <p className="text-white/90 font-medium">Item not found in master data.</p>
-         </div>
-      )}
+      <div className="flex-1 overflow-auto">
+        <table className="w-full text-left border-collapse">
+          <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm text-xs font-semibold text-slate-500 uppercase tracking-wider">
+            <tr>
+              <th className="p-3 w-20">Status</th>
+              <th className="p-3">Item Info</th>
+              {/* Kolom ini disembunyikan di HP (hidden sm:table-cell) */}
+              <th className="hidden sm:table-cell p-3">Brand</th>
+              <th className="hidden sm:table-cell p-3 text-right">Harga</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-sm">
+            {displayItems.length === 0 ? (
+               <tr><td colSpan={4} className="p-8 text-center text-slate-400">Data tidak ditemukan.</td></tr>
+            ) : (
+              displayItems.map((item) => (
+                <tr key={item.id} className={`hover:bg-slate-50 ${item.is_scanned ? 'bg-green-50' : ''}`}>
+                  <td className="p-3 align-top">
+                    {item.is_scanned ? (
+                      <div className="text-center">
+                          <i className="fa-solid fa-check-circle text-green-600 text-xl"></i>
+                      </div>
+                    ) : (
+                      <span className="w-3 h-3 block rounded-full bg-slate-300 mx-auto mt-1"></span>
+                    )}
+                  </td>
+                  <td className="p-3 align-top">
+                    <div className="font-bold text-slate-800">{item.item_name}</div>
+                    <div className="font-mono text-xs text-slate-500 mt-1 bg-slate-100 inline-block px-1 rounded">{item.barcode}</div>
+                    {/* Tampilkan info tambahan di mobile karena kolom kanan di-hide */}
+                    <div className="sm:hidden text-xs text-slate-400 mt-1">
+                        {item.color} • {item.brand} • {new Intl.NumberFormat('id-ID').format(Number(item.price))}
+                    </div>
+                  </td>
+                  <td className="hidden sm:table-cell p-3 align-top text-slate-600">{item.brand}</td>
+                  <td className="hidden sm:table-cell p-3 align-top text-right font-mono">
+                      {new Intl.NumberFormat('id-ID').format(Number(item.price))}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 };
