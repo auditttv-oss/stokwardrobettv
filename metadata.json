@@ -1,0 +1,7 @@
+{
+  "name": "Stock Opname Pro 32",
+  "description": "A high-performance, web-based Stock Opname management tool optimized for speed and usability. Features Excel import, real-time scanning with visual feedback, and progress tracking.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
