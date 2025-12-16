@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabaseClient';
 import { 
   getInventoryStats, getItemByBarcode, markItemAsScanned, 
@@ -23,35 +23,36 @@ const App: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
 
-  // --- AUDIO HELPER (Nada Keras & Jelas) ---
-  const playSound = (type: 'SUCCESS' | 'ERROR' | 'DUPLICATE') => {
-    let url = '';
-    if (type === 'SUCCESS') url = 'https://assets.mixkit.co/active_storage/sfx/2578/2578-preview.m4a'; // Beep Keras
-    if (type === 'ERROR') url = 'https://assets.mixkit.co/active_storage/sfx/2572/2572-preview.m4a'; // Buzzer Error
-    if (type === 'DUPLICATE') url = 'https://assets.mixkit.co/active_storage/sfx/950/950-preview.m4a'; // Alert Warning
+  // --- AUDIO SYSTEM (UNLOCK IOS AUTO-PLAY) ---
+  const successAudio = useRef(new Audio('https://assets.mixkit.co/active_storage/sfx/2578/2578-preview.m4a'));
+  const errorAudio = useRef(new Audio('https://assets.mixkit.co/active_storage/sfx/2572/2572-preview.m4a'));
+  const warningAudio = useRef(new Audio('https://assets.mixkit.co/active_storage/sfx/950/950-preview.m4a'));
 
-    const audio = new Audio(url);
-    audio.volume = 1.0; // Volume Maksimal
-    audio.play().catch(e => console.log("Audio block:", e));
+  // Trik: Mainkan suara kosong saat user klik tombol kamera agar browser mengizinkan suara selanjutnya
+  const unlockAudioContext = () => {
+      successAudio.current.play().then(() => successAudio.current.pause()).catch(() => {});
+      errorAudio.current.play().then(() => errorAudio.current.pause()).catch(() => {});
+      warningAudio.current.play().then(() => warningAudio.current.pause()).catch(() => {});
+  };
+
+  const playAlertSound = (type: 'SUCCESS' | 'ERROR' | 'DUPLICATE') => {
+    // Reset durasi agar bisa diputar berulang cepat
+    if (type === 'SUCCESS') { successAudio.current.currentTime = 0; successAudio.current.play().catch(e=>console.error(e)); }
+    if (type === 'ERROR') { errorAudio.current.currentTime = 0; errorAudio.current.play().catch(e=>console.error(e)); }
+    if (type === 'DUPLICATE') { warningAudio.current.currentTime = 0; warningAudio.current.play().catch(e=>console.error(e)); }
   };
 
   const refreshData = async () => {
     try {
-        const [statData, recentData] = await Promise.all([
-            getInventoryStats(),
-            fetchRecentInventory()
-        ]);
-        setStats(statData);
-        setTableData(recentData);
+        const [statData, recentData] = await Promise.all([ getInventoryStats(), fetchRecentInventory() ]);
+        setStats(statData); setTableData(recentData);
     } catch (e) { console.error("Sync Error", e); }
   };
 
   useEffect(() => {
     refreshData();
-    const channel = supabase.channel('global-inventory-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => {
-           refreshData(); 
-      })
+    const channel = supabase.channel('global-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => refreshData())
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
@@ -60,22 +61,13 @@ const App: React.FC = () => {
     const file = event.target.files?.[0];
     if (!file) return;
     if(!confirm("Upload Data Stok?")) return;
-
-    setIsLoading(true);
-    setUploadProgress(0);
-
+    setIsLoading(true); setUploadProgress(0);
     try {
       const data = await parseExcelFile(file);
       await uploadBulkInventory(data, (pct) => setUploadProgress(pct));
-      alert(`SUKSES! Data masuk.`);
-      window.location.reload();
-    } catch (error: any) {
-      alert(`Gagal: ${error.message}`);
-    } finally {
-      setIsLoading(false);
-      setUploadProgress(0);
-      event.target.value = '';
-    }
+      alert(`SUKSES! Data masuk.`); window.location.reload();
+    } catch (error: any) { alert(`Gagal: ${error.message}`); } 
+    finally { setIsLoading(false); setUploadProgress(0); event.target.value = ''; }
   };
 
   const handleExport = async (filterType: 'ALL' | 'SCANNED' | 'PENDING') => {
@@ -86,16 +78,11 @@ const App: React.FC = () => {
         const data = await fetchAllForExport(filterType);
         if (data.length === 0) { alert("Data Nihil."); return; }
         const headers = ["Barcode,Item Name,Status,Color,Brand,Price,Type,Is Scanned,Scan Time"];
-        const rows = data.map(i => {
-            const safeName = i.item_name ? i.item_name.replace(/"/g, '""') : "";
-            const scanTime = i.scan_timestamp ? new Date(i.scan_timestamp).toLocaleString() : "-";
-            return `${i.barcode},"${safeName}",${i.status},${i.color},${i.brand},${Number(i.price).toFixed(0)},${i.type},${i.is_scanned ? 'YES' : 'NO'},${scanTime}`;
-        });
+        const rows = data.map(i => `${i.barcode},"${i.item_name ? i.item_name.replace(/"/g, '""') : ""}",${i.status},${i.color},${i.brand},${Number(i.price).toFixed(0)},${i.type},${i.is_scanned ? 'YES' : 'NO'},${i.scan_timestamp ? new Date(i.scan_timestamp).toLocaleString() : "-"}`);
         const csvContent = headers.concat(rows).join("\n");
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
-        const link = document.createElement("a"); link.href = url; 
-        link.setAttribute("download", `SO_${filterType}_${Date.now()}.csv`);
+        const link = document.createElement("a"); link.href = url; link.setAttribute("download", `SO_${filterType}.csv`);
         document.body.appendChild(link); link.click(); document.body.removeChild(link);
     } catch(e) { alert("Error export."); }
     finally { if(btnText) btnText.innerText = "DOWNLOAD REPORT"; }
@@ -110,24 +97,29 @@ const App: React.FC = () => {
         const item = await getItemByBarcode(searchCode);
         
         if (!item) {
-            playSound('ERROR');
+            playAlertSound('ERROR');
             setLastScanFeedback({ status: 'NOT_FOUND', message: 'ITEM TIDAK ADA' });
         } else if (item.is_scanned) {
-            playSound('DUPLICATE');
+            playAlertSound('DUPLICATE');
             setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH DI SCAN', item });
         } else {
-            // SUKSES
             const scannedItem = await markItemAsScanned(searchCode);
-            playSound('SUCCESS'); // Bunyi Dulu
+            playAlertSound('SUCCESS'); // Bunyi Keras
             setLastScanFeedback({ status: 'FOUND', message: scannedItem.type || 'BERHASIL', item: scannedItem });
         }
     } catch (error) {
-        playSound('ERROR');
+        playAlertSound('ERROR');
         setLastScanFeedback({ status: 'NOT_FOUND', message: 'ERROR SERVER' });
     } finally {
         setIsProcessing(false);
     }
   }, [isProcessing]);
+
+  // Handle Buka Kamera (Sekaligus Unlock Audio)
+  const openCamera = () => {
+      unlockAudioContext(); // PENTING: Pancing audio agar browser mengizinkan
+      setShowCamera(true);
+  }
 
   return (
     <div className="fixed inset-0 bg-slate-50 flex flex-col font-sans overflow-hidden">
@@ -172,12 +164,11 @@ const App: React.FC = () => {
           <FeedbackDisplay feedback={lastScanFeedback} />
           <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-3">
              <ScannerInput onScan={handleScan} lastResult={lastScanFeedback.status} isProcessing={isProcessing} />
-             <button onClick={() => setShowCamera(true)} className="w-full py-4 bg-indigo-600 active:bg-indigo-800 text-white rounded-xl shadow-md font-bold flex justify-center gap-2 items-center text-lg animate-pulse">
-                <i className="fa-solid fa-camera text-2xl"></i> SCAN BARCODE
+             <button onClick={openCamera} className="w-full py-4 bg-indigo-600 active:bg-indigo-800 text-white rounded-xl shadow-md font-bold flex justify-center gap-2 items-center text-lg animate-pulse">
+                <i className="fa-solid fa-camera text-2xl"></i> SCAN KAMERA
              </button>
           </div>
         </div>
-        
         <div className="w-full lg:w-7/12 flex flex-col shrink-0 h-[400px] lg:h-full pb-10">
           <InventoryTable items={tableData} />
         </div>
