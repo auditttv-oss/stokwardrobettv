@@ -9,176 +9,205 @@ interface CameraScannerProps {
 export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onClose }) => {
   const [cameras, setCameras] = useState<any[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
-  const [isScanning, setIsScanning] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+  
   const scannerRef = useRef<Html5Qrcode | null>(null);
-  const containerId = "reader-custom";
+  const containerId = "reader-custom-view"; // ID Unik
 
-  // 1. Inisialisasi & Ambil Daftar Kamera
+  // 1. Init Kamera & Deteksi OS
   useEffect(() => {
+    // Deteksi iPhone/iPad
+    const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+    setIsIOS(iOS);
+
     const initCamera = async () => {
       try {
-        // Minta izin dulu
-        await Html5Qrcode.getCameras();
-        
+        await Html5Qrcode.getCameras(); // Minta izin
         const devices = await Html5Qrcode.getCameras();
+        
         if (devices && devices.length) {
           setCameras(devices);
           
-          // LOGIKA PINTAR MEMILIH KAMERA UTAMA:
-          // Cari kamera belakang. Di Android multi-kamera, biasanya kamera utama 
-          // ada di urutan terakhir dari list 'back' cameras, atau yang labelnya '0' / 'back'.
-          
-          // Filter kamera belakang
+          // Logic pilih kamera belakang
           const backCameras = devices.filter(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('rear'));
           
-          let cameraIdToUse = devices[0].id; // Default
-
+          let cameraIdToUse = devices[0].id; 
           if (backCameras.length > 0) {
-             // Coba ambil yang terakhir (seringkali ini kamera utama high-res di samsung/xiaomi)
-             // Atau ambil yang pertama jika cuma satu.
-             // Kita prioritas ambil yang labelnya TIDAK mengandung 'wide' atau 'macro' jika memungkinkan
-             const mainCam = backCameras.find(c => !c.label.includes('wide') && !c.label.includes('macro'));
-             cameraIdToUse = mainCam ? mainCam.id : backCameras[0].id;
+             // Ambil kamera terakhir (biasanya kamera utama pada multi-camera setup)
+             const mainCam = backCameras[backCameras.length - 1]; 
+             cameraIdToUse = mainCam.id;
           }
-
           setSelectedCameraId(cameraIdToUse);
         }
       } catch (err) {
-        console.error("Camera permission error", err);
-        alert("Gagal mengakses kamera. Pastikan izin diberikan.");
+        alert("Gagal akses kamera. Pastikan izin browser diberikan.");
       }
     };
 
     initCamera();
-
-    return () => {
-      stopScanner();
-    };
+    return () => { stopScanner(); };
   }, []);
 
-  // 2. Fungsi Mulai Scan
+  // 2. Start Scanner
   const startScanner = async (cameraId: string) => {
-    if (scannerRef.current) {
-      await stopScanner();
-    }
+    if (scannerRef.current) await stopScanner();
 
     const html5QrCode = new Html5Qrcode(containerId);
     scannerRef.current = html5QrCode;
 
+    // CONFIG KHUSUS IOS vs ANDROID
     const config = {
-      fps: 30, // High FPS biar responsif
-      qrbox: { width: 300, height: 200 }, // Area scan luas persegi panjang
+      fps: 30, // High FPS
+      qrbox: { width: 300, height: 200 }, // Kotak Melebar (Landscape)
       aspectRatio: 1.0,
+      disableFlip: false,
       formatsToSupport: [
-            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_128, // Barcode Batang (Prioritas)
             Html5QrcodeSupportedFormats.EAN_13,
             Html5QrcodeSupportedFormats.CODE_39,
-            Html5QrcodeSupportedFormats.QR_CODE,
-            Html5QrcodeSupportedFormats.UPC_A
+            Html5QrcodeSupportedFormats.QR_CODE
       ]
     };
 
+    // Video Constraint Logic
+    let videoConstraints: any = {
+        facingMode: "environment", // Kamera Belakang
+        focusMode: "continuous"
+    };
+
+    if (!isIOS) {
+        // ANDROID: Paksa Resolusi HD agar tajam
+        videoConstraints = {
+            ...videoConstraints,
+            width: { min: 640, ideal: 1280, max: 1920 },
+            height: { min: 480, ideal: 720, max: 1080 },
+        };
+    } else {
+        // IPHONE (X-15): JANGAN PAKSA RESOLUSI! 
+        // Biarkan kosong agar iOS pakai native resolution. 
+        // Memaksa resolusi di iOS sering bikin kamera nge-zoom sendiri atau blur.
+    }
+
     try {
       await html5QrCode.start(
-        cameraId,
+        cameraId, // Bisa Camera ID atau Constraints
         config,
         (decodedText) => {
-           // Success Callback
-           // Vibrate
            if (navigator.vibrate) navigator.vibrate(200);
-           stopScanner(); // Stop dulu biar ga double scan
            onScanSuccess(decodedText);
+           stopScanner(); // Tutup setelah berhasil
         },
-        () => {
-           // Ignore failures (scanning...)
-        }
+        () => {} // Ignore failures
       );
-      setIsScanning(true);
     } catch (err) {
       console.error("Start failed", err);
     }
   };
 
-  // 3. Fungsi Stop Scan
   const stopScanner = async () => {
     if (scannerRef.current && scannerRef.current.isScanning) {
-      try {
-        await scannerRef.current.stop();
-        scannerRef.current.clear();
-        setIsScanning(false);
-      } catch (err) {
-        console.error("Stop failed", err);
-      }
+      try { await scannerRef.current.stop(); scannerRef.current.clear(); } catch (e) {}
     }
   };
 
-  // Trigger start saat camera ID berubah atau pertama kali load
+  // Auto start saat kamera terpilih
   useEffect(() => {
-    if (selectedCameraId) {
-      startScanner(selectedCameraId);
-    }
+    if (selectedCameraId) startScanner(selectedCameraId);
   }, [selectedCameraId]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-0 sm:p-4">
-      <div className="bg-slate-900 w-full max-w-md h-full sm:h-auto sm:rounded-2xl flex flex-col overflow-hidden relative">
+      
+      {/* Container Utama */}
+      <div className="bg-slate-900 w-full max-w-md h-full sm:h-auto sm:rounded-2xl flex flex-col relative overflow-hidden">
         
         {/* Header */}
-        <div className="p-4 bg-slate-800 border-b border-slate-700 flex justify-between items-center z-10">
-          <h3 className="text-white font-bold text-lg"><i className="fa-solid fa-camera mr-2"></i> Scanner</h3>
-          <button onClick={onClose} className="bg-slate-700 text-white w-10 h-10 rounded-full flex items-center justify-center">
-            <i className="fa-solid fa-xmark"></i>
+        <div className="p-4 bg-slate-800 border-b border-slate-700 flex justify-between items-center z-20 shadow-md">
+          <h3 className="text-white font-bold text-lg flex items-center">
+             <i className="fa-solid fa-expand text-blue-400 mr-2"></i> 
+             Scanner Pro
+          </h3>
+          <button onClick={onClose} className="bg-slate-700 hover:bg-slate-600 text-white w-9 h-9 rounded-full flex items-center justify-center transition-colors">
+            <i className="fa-solid fa-xmark text-xl"></i>
           </button>
         </div>
 
-        {/* Viewport Kamera */}
+        {/* AREA KAMERA */}
         <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
-             {/* Div Kosong ini akan diisi video oleh library */}
-             <div id="reader-custom" className="w-full h-full"></div>
              
-             {/* Overlay Garis Merah Laser */}
-             <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                <div className="w-[80%] h-[250px] border-2 border-white/50 rounded-lg relative">
-                    <div className="absolute top-1/2 left-0 w-full h-[2px] bg-red-500 shadow-[0_0_10px_red] animate-pulse"></div>
-                    <p className="absolute -bottom-8 w-full text-center text-white text-xs font-bold drop-shadow-md">
-                        Tempatkan Barcode di dalam kotak
+             {/* Element Video Library */}
+             <div id="reader-custom-view" className="w-full h-full object-cover"></div>
+             
+             {/* OVERLAY ANIMASI LASER (Manual Div agar pasti muncul) */}
+             <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
+                {/* Kotak Target */}
+                <div className="w-[80%] h-[200px] border-[3px] border-white/40 rounded-xl relative shadow-[0_0_100px_rgba(0,0,0,0.5)_inset]">
+                    
+                    {/* Sudut-sudut Penegas */}
+                    <div className="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-blue-500 -mt-1 -ml-1 rounded-tl-lg"></div>
+                    <div className="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-blue-500 -mt-1 -mr-1 rounded-tr-lg"></div>
+                    <div className="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-blue-500 -mb-1 -ml-1 rounded-bl-lg"></div>
+                    <div className="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-blue-500 -mb-1 -mr-1 rounded-br-lg"></div>
+
+                    {/* Laser Merah Bergerak */}
+                    <div className="absolute w-full h-[2px] bg-red-500 shadow-[0_0_15px_red] animate-scan-laser top-0"></div>
+                    
+                    {/* Teks Instruksi */}
+                    <p className="absolute -bottom-10 w-full text-center text-white text-sm font-semibold drop-shadow-md bg-black/40 py-1 rounded-full">
+                        Tempatkan Barcode di sini
                     </p>
                 </div>
              </div>
         </div>
 
-        {/* Control Panel (Pilih Kamera) */}
-        <div className="p-5 bg-slate-800 border-t border-slate-700 z-10">
-           <label className="text-slate-400 text-xs uppercase font-bold mb-2 block">Pilih Kamera (Jika Buram/Salah)</label>
+        {/* Footer Controls */}
+        <div className="p-5 bg-slate-800 border-t border-slate-700 z-20">
+           <label className="text-slate-400 text-[10px] uppercase font-bold mb-2 block tracking-wider">
+               Kamera Aktif:
+           </label>
            
            <div className="flex gap-2">
                <select 
-                 className="flex-1 bg-white text-slate-900 font-bold p-3 rounded-lg outline-none border-2 border-blue-500"
+                 className="flex-1 bg-white text-slate-900 font-bold p-3 rounded-lg outline-none border-2 border-blue-500 text-sm shadow-lg"
                  value={selectedCameraId}
                  onChange={(e) => setSelectedCameraId(e.target.value)}
                >
                  {cameras.map((cam) => (
                    <option key={cam.id} value={cam.id}>
-                     {cam.label || `Camera ${cam.id.substr(0, 5)}...`}
+                     {cam.label || `Camera ${cam.id}`}
                    </option>
                  ))}
                </select>
 
-               {/* Tombol Restart Manual jika macet */}
+               {/* Tombol Restart Manual */}
                <button 
                 onClick={() => { stopScanner().then(() => startScanner(selectedCameraId)); }}
-                className="bg-slate-700 text-white px-4 rounded-lg"
+                className="bg-slate-700 hover:bg-slate-600 text-white px-4 rounded-lg transition-colors border border-slate-600"
+                title="Refresh Kamera"
                >
                 <i className="fa-solid fa-rotate"></i>
                </button>
            </div>
            
-           <div className="mt-2 text-xs text-slate-500 text-center">
-              Jika barcode tidak terbaca, coba ganti kamera lain di daftar.
+           <div className="mt-3 flex justify-between items-center text-[10px] text-slate-500 font-mono">
+              <span>{isIOS ? 'Mode: iOS Native' : 'Mode: Android HD'}</span>
+              <span>FPS: 30</span>
            </div>
         </div>
-
       </div>
+      
+      {/* Style Animasi Laser */}
+      <style>{`
+        @keyframes scan-laser {
+            0% { top: 5%; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 95%; opacity: 0; }
+        }
+        .animate-scan-laser {
+            animation: scan-laser 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+      `}</style>
     </div>
   );
 };

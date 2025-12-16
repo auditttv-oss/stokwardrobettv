@@ -3,7 +3,7 @@ import { supabase } from './lib/supabaseClient';
 import { 
   getInventoryStats, getItemByBarcode, markItemAsScanned, 
   fetchRecentInventory, uploadBulkInventory, clearAllData, 
-  resetInventoryStatus, fetchAllForExport 
+  fetchAllForExport 
 } from './services/inventoryService';
 import { parseExcelFile } from './services/excelService';
 import { InventoryItem, ScanFeedback } from './types';
@@ -23,12 +23,23 @@ const App: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
 
-  // Fungsi Refresh Data Global
+  // --- AUDIO HELPER (Nada Keras & Jelas) ---
+  const playSound = (type: 'SUCCESS' | 'ERROR' | 'DUPLICATE') => {
+    let url = '';
+    if (type === 'SUCCESS') url = 'https://assets.mixkit.co/active_storage/sfx/2578/2578-preview.m4a'; // Beep Keras
+    if (type === 'ERROR') url = 'https://assets.mixkit.co/active_storage/sfx/2572/2572-preview.m4a'; // Buzzer Error
+    if (type === 'DUPLICATE') url = 'https://assets.mixkit.co/active_storage/sfx/950/950-preview.m4a'; // Alert Warning
+
+    const audio = new Audio(url);
+    audio.volume = 1.0; // Volume Maksimal
+    audio.play().catch(e => console.log("Audio block:", e));
+  };
+
   const refreshData = async () => {
     try {
         const [statData, recentData] = await Promise.all([
             getInventoryStats(),
-            fetchRecentInventory() // Default fetch 50 item terbaru
+            fetchRecentInventory()
         ]);
         setStats(statData);
         setTableData(recentData);
@@ -37,16 +48,11 @@ const App: React.FC = () => {
 
   useEffect(() => {
     refreshData();
-    
-    // SUBSCRIPTION REALTIME (Penting untuk Multi-Device)
-    // Event '*' artinya: Insert, Update, atau Delete apapun di tabel inventory
-    // Aplikasi akan langsung refresh data.
     const channel = supabase.channel('global-inventory-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => {
            refreshData(); 
       })
       .subscribe();
-
     return () => { supabase.removeChannel(channel); };
   }, []);
 
@@ -74,21 +80,17 @@ const App: React.FC = () => {
 
   const handleExport = async (filterType: 'ALL' | 'SCANNED' | 'PENDING') => {
     if (stats.total === 0) { alert("Data Kosong."); return; }
-    
     const btnText = document.getElementById('export-btn-text');
     if(btnText) btnText.innerText = "Processing...";
-
     try {
         const data = await fetchAllForExport(filterType);
         if (data.length === 0) { alert("Data Nihil."); return; }
-
         const headers = ["Barcode,Item Name,Status,Color,Brand,Price,Type,Is Scanned,Scan Time"];
         const rows = data.map(i => {
             const safeName = i.item_name ? i.item_name.replace(/"/g, '""') : "";
             const scanTime = i.scan_timestamp ? new Date(i.scan_timestamp).toLocaleString() : "-";
             return `${i.barcode},"${safeName}",${i.status},${i.color},${i.brand},${Number(i.price).toFixed(0)},${i.type},${i.is_scanned ? 'YES' : 'NO'},${scanTime}`;
         });
-
         const csvContent = headers.concat(rows).join("\n");
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
@@ -108,22 +110,20 @@ const App: React.FC = () => {
         const item = await getItemByBarcode(searchCode);
         
         if (!item) {
-            setLastScanFeedback({ status: 'NOT_FOUND', message: 'Nihil' });
-            // Mainkan suara error
-            const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
-            audio.play().catch(e=>{});
+            playSound('ERROR');
+            setLastScanFeedback({ status: 'NOT_FOUND', message: 'ITEM TIDAK ADA' });
         } else if (item.is_scanned) {
-            setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH SCAN', item });
-            const audio = new Audio('https://actions.google.com/sounds/v1/alarms/bugle_tune.ogg'); // Nada beda
-            audio.play().catch(e=>{});
+            playSound('DUPLICATE');
+            setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH DI SCAN', item });
         } else {
+            // SUKSES
             const scannedItem = await markItemAsScanned(searchCode);
-            setLastScanFeedback({ status: 'FOUND', message: scannedItem.type, item: scannedItem });
-            const audio = new Audio('https://actions.google.com/sounds/v1/science_fiction/scifi_laser.ogg'); // Nada sukses
-            audio.play().catch(e=>{});
+            playSound('SUCCESS'); // Bunyi Dulu
+            setLastScanFeedback({ status: 'FOUND', message: scannedItem.type || 'BERHASIL', item: scannedItem });
         }
     } catch (error) {
-        setLastScanFeedback({ status: 'NOT_FOUND', message: 'Error Server' });
+        playSound('ERROR');
+        setLastScanFeedback({ status: 'NOT_FOUND', message: 'ERROR SERVER' });
     } finally {
         setIsProcessing(false);
     }
@@ -172,8 +172,8 @@ const App: React.FC = () => {
           <FeedbackDisplay feedback={lastScanFeedback} />
           <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-3">
              <ScannerInput onScan={handleScan} lastResult={lastScanFeedback.status} isProcessing={isProcessing} />
-             <button onClick={() => setShowCamera(true)} className="w-full py-3 bg-indigo-600 active:bg-indigo-800 text-white rounded-xl shadow-md font-bold flex justify-center gap-2 items-center text-base">
-                <i className="fa-solid fa-camera"></i> SCAN KAMERA
+             <button onClick={() => setShowCamera(true)} className="w-full py-4 bg-indigo-600 active:bg-indigo-800 text-white rounded-xl shadow-md font-bold flex justify-center gap-2 items-center text-lg animate-pulse">
+                <i className="fa-solid fa-camera text-2xl"></i> SCAN BARCODE
              </button>
           </div>
         </div>
