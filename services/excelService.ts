@@ -1,6 +1,5 @@
 import { read, utils } from 'xlsx';
 
-// Helper: Cari value di row berdasarkan kata kunci (case insensitive)
 const findValue = (row: any, keywords: string[]): any => {
   const keys = Object.keys(row);
   const foundKey = keys.find(key => 
@@ -9,22 +8,16 @@ const findValue = (row: any, keywords: string[]): any => {
   return foundKey ? row[foundKey] : null;
 };
 
-// LOGIKA BARU: Membersihkan Harga dengan Agresif
+// PEMBERSIH HARGA AGRESIF
 const parsePrice = (price: any): number => {
-  if (typeof price === 'number') return price;
+  if (typeof price === 'number') return Math.floor(price); // Pastikan bulat
   
   if (typeof price === 'string') {
-    let clean = price.trim();
-    
-    // 1. Hapus ",00" atau ".00" di ujung (sen/desimal nol)
-    clean = clean.replace(/[,.]00$/, '');
-    
-    // 2. Hapus semua karakter KECUALI angka (0-9)
-    // Ini mengubah "250.000" -> "250000" dan "Rp 250,000" -> "250000"
+    // Hapus desimal nol di belakang (,00 atau .00)
+    let clean = price.replace(/[,.]00$/, '');
+    // Hapus SEMUA karakter kecuali angka 0-9
     clean = clean.replace(/[^0-9]/g, '');
-
-    // 3. Parse ke number
-    return parseFloat(clean) || 0;
+    return parseInt(clean, 10) || 0;
   }
   return 0;
 };
@@ -36,53 +29,47 @@ export const parseExcelFile = async (file: File): Promise<any[]> => {
     reader.onload = (e) => {
       try {
         const data = e.target?.result;
-        
-        // Baca Excel
         const workbook = read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         
-        // defval: '' memastikan kolom kosong tidak undefined
         const rawData = utils.sheet_to_json(worksheet, { defval: '' });
         
-        if (rawData.length === 0) {
-            throw new Error("File Excel kosong.");
-        }
+        if (rawData.length === 0) throw new Error("File Kosong.");
 
         const formattedData = rawData.map((row: any) => {
-            // Pencarian Kolom yang lebih pintar
-            const barcode = findValue(row, ['barcode', 'bar code', 'kode', 'sku', 'item id']) || '';
-            const name = findValue(row, ['item name', 'name', 'nama', 'nama barang', 'description', 'desc']) || 'No Name';
-            const brand = findValue(row, ['brand', 'merk', 'vendor']) || '-';
+            const barcode = findValue(row, ['barcode', 'bar code', 'kode', 'sku']) || '';
+            const name = findValue(row, ['item name', 'name', 'nama', 'desc']) || 'No Name';
+            const brand = findValue(row, ['brand', 'merk']) || '-';
             const color = findValue(row, ['color', 'warna']) || '-';
-            const status = findValue(row, ['status', 'sts', 'state']) || '-';
-            const type = findValue(row, ['type', 'tipe', 'kategori', 'group']) || 'Sistem';
-            const priceRaw = findValue(row, ['price', 'harga', 'rp', 'amount', 'sales price']) || 0;
+            const status = findValue(row, ['status', 'sts']) || '-';
+            const type = findValue(row, ['type', 'tipe']) || 'Sistem';
+            const priceRaw = findValue(row, ['price', 'harga', 'rp', 'amount']) || 0;
+
+            // Validasi ketat: Barcode harus ada
+            const cleanBarcode = String(barcode).trim();
+            if(!cleanBarcode || cleanBarcode.toLowerCase() === 'undefined') return null;
 
             return {
-              barcode: String(barcode).trim(),
-              item_name: String(name).trim(),
+              barcode: cleanBarcode,
+              item_name: String(name).trim().replace(/['"]/g, ''), // Hapus kutip yang bikin error SQL
               brand: String(brand).trim(),
               color: String(color).trim(),
               status: String(status).trim(),
               type: String(type).trim(),
-              price: parsePrice(priceRaw), // Menggunakan logika parsePrice baru
+              price: parsePrice(priceRaw),
               is_scanned: false,
             };
-        }).filter((item: any) => item.barcode.length > 0 && item.barcode !== 'undefined');
+        }).filter(item => item !== null); // Hapus baris kosong/invalid
 
-        if (formattedData.length === 0) {
-            throw new Error("Gagal membaca Barcode. Pastikan kolom header benar (Barcode, Name, Price, dll).");
-        }
-
+        if (formattedData.length === 0) throw new Error("Tidak ada data valid.");
         resolve(formattedData);
+
       } catch (error) {
-        console.error("Parse Error:", error);
         reject(error);
       }
     };
-
-    reader.onerror = (error) => reject(error);
+    reader.onerror = (err) => reject(err);
     reader.readAsArrayBuffer(file);
   });
 };

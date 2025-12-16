@@ -13,19 +13,21 @@ const App: React.FC = () => {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [lastScanFeedback, setLastScanFeedback] = useState<ScanFeedback>({ status: 'IDLE', message: '' });
   const [isLoading, setIsLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0); // State Progress
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
 
   const loadData = async () => {
-    setIsLoading(true);
+    // Load silent agar tidak mengganggu UX
     try {
         const data = await fetchInventory();
         setInventory(data);
-    } catch (error) { console.error("Error", error); } finally { setIsLoading(false); }
+    } catch (error) { console.error("Error loading data", error); }
   };
 
   useEffect(() => {
     loadData();
+    // Realtime listener
     const channel = supabase.channel('inventory-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, (payload) => {
            if (payload.eventType === 'INSERT') setInventory(prev => [payload.new as InventoryItem, ...prev]);
@@ -38,45 +40,50 @@ const App: React.FC = () => {
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    if(!confirm("Upload data? Harga dan data lain akan diperbarui berdasarkan Barcode.")) return;
+
+    if(!confirm("Upload 25.000+ data mungkin butuh 1-2 menit. JANGAN TUTUP BROWSER. Lanjut?")) return;
+
     setIsLoading(true);
+    setUploadProgress(0); // Reset progress
+
     try {
       const data = await parseExcelFile(file);
-      await uploadBulkInventory(data);
-      alert(`Berhasil import ${data.length} data dengan harga terupdate.`);
-    } catch (error: any) { alert(`Gagal: ${error.message}`); } 
-    finally { setIsLoading(false); event.target.value = ''; }
+      console.log(`Parsed ${data.length} items.`);
+      
+      // Pass callback progress bar
+      await uploadBulkInventory(data, (percent) => {
+          setUploadProgress(percent);
+      });
+
+      alert(`SUKSES! ${data.length} Data berhasil disimpan.`);
+      window.location.reload(); // Reload agar data fresh tampil
+    } catch (error: any) {
+      alert(`GAGAL: ${error.message}`);
+    } finally {
+      setIsLoading(false);
+      setUploadProgress(0);
+      event.target.value = '';
+    }
   };
 
   const handleExport = (filterType: 'ALL' | 'SCANNED' | 'PENDING') => {
-    if (inventory.length === 0) { alert("Data Kosong."); return; }
-    
+    if (inventory.length === 0) { alert("Data Kosong / Belum termuat."); return; }
     let dataToExport = inventory;
-    let fileName = "StockOpname_ALL";
-
+    let fileName = "SO_ALL";
     if (filterType === 'SCANNED') { dataToExport = inventory.filter(i => i.is_scanned); fileName = "SO_SUDAH"; } 
     else if (filterType === 'PENDING') { dataToExport = inventory.filter(i => !i.is_scanned); fileName = "SO_BELUM"; }
 
-    if (dataToExport.length === 0) { alert("Tidak ada data untuk kategori ini."); return; }
-    
     const headers = ["Barcode,Item Name,Status,Color,Brand,Price,Type,Is Scanned,Scan Time"];
-    
     const rows = dataToExport.map(i => {
-        // Sanitasi Data CSV
         const safeName = i.item_name ? i.item_name.replace(/"/g, '""') : "";
         const scanTime = i.scan_timestamp ? new Date(i.scan_timestamp).toLocaleString() : "-";
-        // Pastikan harga angka bulat
-        const safePrice = i.price ? Number(i.price).toFixed(0) : "0";
-        
-        return `${i.barcode},"${safeName}",${i.status},${i.color},${i.brand},${safePrice},${i.type},${i.is_scanned ? 'YES' : 'NO'},${scanTime}`;
+        return `${i.barcode},"${safeName}",${i.status},${i.color},${i.brand},${Number(i.price).toFixed(0)},${i.type},${i.is_scanned ? 'YES' : 'NO'},${scanTime}`;
     });
 
     const csvContent = headers.concat(rows).join("\n");
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement("a"); 
-    link.href = url; 
-    link.setAttribute("download", `${fileName}_${Date.now()}.csv`);
+    const link = document.createElement("a"); link.href = url; link.setAttribute("download", `${fileName}.csv`);
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
@@ -84,10 +91,17 @@ const App: React.FC = () => {
     if (!barcode || isProcessing) return;
     setIsProcessing(true);
     const searchCode = barcode.trim();
+    // Cari di local inventory dulu
     const localItem = inventory.find(i => i.barcode === searchCode);
 
-    if (!localItem) { setLastScanFeedback({ status: 'NOT_FOUND', message: 'Nihil' }); setIsProcessing(false); return; }
-    if (localItem.is_scanned) { setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH SCAN', item: localItem }); setIsProcessing(false); return; }
+    if (!localItem) { 
+        setLastScanFeedback({ status: 'NOT_FOUND', message: 'Nihil' }); 
+        setIsProcessing(false); return; 
+    }
+    if (localItem.is_scanned) { 
+        setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH SCAN', item: localItem }); 
+        setIsProcessing(false); return; 
+    }
 
     try {
         const updatedItem = await markItemAsScanned(searchCode);
@@ -98,6 +112,25 @@ const App: React.FC = () => {
 
   return (
     <div className="fixed inset-0 bg-slate-50 flex flex-col font-sans overflow-hidden">
+      {/* OVERLAY LOADING BAR saat Upload Besar */}
+      {isLoading && (
+          <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center text-white p-6">
+              <i className="fa-solid fa-cloud-arrow-up text-5xl mb-4 animate-bounce"></i>
+              <h2 className="text-2xl font-bold mb-2">Mengupload Data...</h2>
+              <div className="w-full max-w-md bg-slate-700 rounded-full h-6 overflow-hidden border border-slate-500">
+                  <div 
+                    className="bg-green-500 h-full transition-all duration-300 flex items-center justify-center text-xs font-bold" 
+                    style={{ width: `${uploadProgress}%` }}
+                  >
+                    {uploadProgress}%
+                  </div>
+              </div>
+              <p className="mt-4 text-slate-300 text-center animate-pulse">
+                Mohon tunggu. Jangan tutup browser.<br/>Sedang memproses 25.000+ data.
+              </p>
+          </div>
+      )}
+
       <header className="bg-white shadow-sm z-30 shrink-0">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -106,7 +139,7 @@ const App: React.FC = () => {
           </div>
           <div className="flex items-center gap-2">
              <label className="cursor-pointer bg-blue-600 text-white p-2 rounded-lg text-sm flex items-center gap-2">
-                <i className={`fa-solid ${isLoading ? 'fa-spinner fa-spin' : 'fa-upload'}`}></i>
+                <i className="fa-solid fa-upload"></i>
                 <input type="file" accept=".xlsx, .csv" className="hidden" onChange={handleFileUpload} disabled={isLoading} />
               </label>
               <div className="dropdown relative group">

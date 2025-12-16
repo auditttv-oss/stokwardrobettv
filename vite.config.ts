@@ -3,11 +3,9 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
-    const env = loadEnv(mode, process.cwd(), '');
-    
     return {
-      // GANTI KE '/' AGAR TIDAK 404 DI VERCEL
-      base: '/', 
+      // PENTING: Gunakan './' agar relatif dan tidak 404
+      base: './', 
       server: {
         port: 3000,
         host: '0.0.0.0',
@@ -16,6 +14,14 @@ export default defineConfig(({ mode }) => {
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
+        }
+      },
+      build: {
+        // Optimasi build agar file tidak terlalu terpecah
+        rollupOptions: {
+            output: {
+                manualChunks: undefined
+            }
         }
       }
     };
