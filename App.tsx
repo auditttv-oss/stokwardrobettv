@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './lib/supabaseClient';
 import { 
   getInventoryStats, getItemByBarcode, markItemAsScanned, 
@@ -13,33 +13,36 @@ import { FeedbackDisplay } from './components/FeedbackDisplay';
 import { InventoryTable } from './components/InventoryTable';
 import { CameraScanner } from './components/CameraScanner';
 
+// --- AUDIO GLOBAL PRELOAD (Agar tidak delay) ---
+const audioSuccess = new Audio('https://assets.mixkit.co/active_storage/sfx/2578/2578-preview.m4a');
+const audioError = new Audio('https://assets.mixkit.co/active_storage/sfx/2572/2572-preview.m4a');
+const audioWarn = new Audio('https://assets.mixkit.co/active_storage/sfx/950/950-preview.m4a');
+
+// Set Volume
+audioSuccess.volume = 1.0;
+audioError.volume = 1.0;
+audioWarn.volume = 1.0;
+
 const App: React.FC = () => {
   const [tableData, setTableData] = useState<InventoryItem[]>([]);
   const [stats, setStats] = useState({ total: 0, scanned: 0 });
-  
   const [lastScanFeedback, setLastScanFeedback] = useState<ScanFeedback>({ status: 'IDLE', message: '' });
   const [isLoading, setIsLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
 
-  // --- AUDIO SYSTEM (UNLOCK IOS AUTO-PLAY) ---
-  const successAudio = useRef(new Audio('https://assets.mixkit.co/active_storage/sfx/2578/2578-preview.m4a'));
-  const errorAudio = useRef(new Audio('https://assets.mixkit.co/active_storage/sfx/2572/2572-preview.m4a'));
-  const warningAudio = useRef(new Audio('https://assets.mixkit.co/active_storage/sfx/950/950-preview.m4a'));
-
-  // Trik: Mainkan suara kosong saat user klik tombol kamera agar browser mengizinkan suara selanjutnya
-  const unlockAudioContext = () => {
-      successAudio.current.play().then(() => successAudio.current.pause()).catch(() => {});
-      errorAudio.current.play().then(() => errorAudio.current.pause()).catch(() => {});
-      warningAudio.current.play().then(() => warningAudio.current.pause()).catch(() => {});
+  // Trik Unlock Audio iOS
+  const unlockAudio = () => {
+      audioSuccess.play().then(() => audioSuccess.pause()).catch(()=>{});
+      audioError.play().then(() => audioError.pause()).catch(()=>{});
+      audioWarn.play().then(() => audioWarn.pause()).catch(()=>{});
   };
 
-  const playAlertSound = (type: 'SUCCESS' | 'ERROR' | 'DUPLICATE') => {
-    // Reset durasi agar bisa diputar berulang cepat
-    if (type === 'SUCCESS') { successAudio.current.currentTime = 0; successAudio.current.play().catch(e=>console.error(e)); }
-    if (type === 'ERROR') { errorAudio.current.currentTime = 0; errorAudio.current.play().catch(e=>console.error(e)); }
-    if (type === 'DUPLICATE') { warningAudio.current.currentTime = 0; warningAudio.current.play().catch(e=>console.error(e)); }
+  const playSound = (type: 'OK' | 'FAIL' | 'DUP') => {
+      if (type === 'OK') { audioSuccess.currentTime = 0; audioSuccess.play().catch(()=>{}); }
+      if (type === 'FAIL') { audioError.currentTime = 0; audioError.play().catch(()=>{}); }
+      if (type === 'DUP') { audioWarn.currentTime = 0; audioWarn.play().catch(()=>{}); }
   };
 
   const refreshData = async () => {
@@ -97,27 +100,27 @@ const App: React.FC = () => {
         const item = await getItemByBarcode(searchCode);
         
         if (!item) {
-            playAlertSound('ERROR');
-            setLastScanFeedback({ status: 'NOT_FOUND', message: 'ITEM TIDAK ADA' });
+            playSound('FAIL');
+            setLastScanFeedback({ status: 'NOT_FOUND', message: 'TIDAK DITEMUKAN' });
         } else if (item.is_scanned) {
-            playAlertSound('DUPLICATE');
+            playSound('DUP');
             setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH DI SCAN', item });
         } else {
             const scannedItem = await markItemAsScanned(searchCode);
-            playAlertSound('SUCCESS'); // Bunyi Keras
+            playSound('OK'); 
             setLastScanFeedback({ status: 'FOUND', message: scannedItem.type || 'BERHASIL', item: scannedItem });
         }
     } catch (error) {
-        playAlertSound('ERROR');
+        playSound('FAIL');
         setLastScanFeedback({ status: 'NOT_FOUND', message: 'ERROR SERVER' });
     } finally {
         setIsProcessing(false);
     }
   }, [isProcessing]);
 
-  // Handle Buka Kamera (Sekaligus Unlock Audio)
+  // Tombol Buka Kamera (Sekaligus Unlock Audio)
   const openCamera = () => {
-      unlockAudioContext(); // PENTING: Pancing audio agar browser mengizinkan
+      unlockAudio();
       setShowCamera(true);
   }
 
@@ -164,6 +167,7 @@ const App: React.FC = () => {
           <FeedbackDisplay feedback={lastScanFeedback} />
           <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-3">
              <ScannerInput onScan={handleScan} lastResult={lastScanFeedback.status} isProcessing={isProcessing} />
+             {/* Tombol Unlock Audio & Buka Kamera */}
              <button onClick={openCamera} className="w-full py-4 bg-indigo-600 active:bg-indigo-800 text-white rounded-xl shadow-md font-bold flex justify-center gap-2 items-center text-lg animate-pulse">
                 <i className="fa-solid fa-camera text-2xl"></i> SCAN KAMERA
              </button>

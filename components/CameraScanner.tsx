@@ -10,72 +10,62 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
   const [cameras, setCameras] = useState<any[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   const [isIOS, setIsIOS] = useState(false);
+  
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const containerId = "reader-custom-view";
 
   useEffect(() => {
-    // Deteksi iOS (iPhone/iPad)
+    // Deteksi iOS yang lebih akurat
     const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     setIsIOS(iOS);
 
     const initCamera = async () => {
       try {
-        // Minta izin kamera
         await Html5Qrcode.getCameras();
         const devices = await Html5Qrcode.getCameras();
-        
         if (devices && devices.length) {
           setCameras(devices);
           
-          // Cari kamera belakang
-          // Di iPhone, biasanya kamera belakang ada di akhir list atau berlabel 'Back'
+          // Prioritas Kamera Belakang
           let backCam = devices.find(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('rear'));
+          // Ambil yang terakhir (biasanya Main Camera di iPhone)
+          if (!backCam && devices.length > 1) backCam = devices[devices.length - 1];
           
-          // Jika tidak ketemu yang ada label 'back', ambil yang terakhir (biasanya main camera)
-          if (!backCam && devices.length > 1) {
-              backCam = devices[devices.length - 1];
-          }
-
           setSelectedCameraId(backCam ? backCam.id : devices[0].id);
         }
       } catch (err) {
-        alert("Gagal akses kamera. Periksa izin browser.");
+        alert("Gagal akses kamera.");
       }
     };
-
     initCamera();
     return () => { stopScanner(); };
   }, []);
 
   const startScanner = async (cameraId: string) => {
     if (scannerRef.current) await stopScanner();
-    
-    // Hapus element lama jika ada agar bersih
-    const oldEl = document.getElementById(containerId);
-    if(oldEl) oldEl.innerHTML = "";
-
     const html5QrCode = new Html5Qrcode(containerId);
     scannerRef.current = html5QrCode;
 
-    // CONFIG KHUSUS IOS
-    // iPhone tidak suka resolusi dipaksa. Biarkan undefined.
-    const videoConstraints = isIOS ? {
-        facingMode: "environment" // Cukup ini saja untuk iOS
-    } : {
+    // CONFIG RAHASIA IPHONE:
+    // 1. Jangan set width/height constraint (biar auto fokus jalan)
+    // 2. Gunakan 'advanced' property untuk zoom
+    const videoConstraints = {
         facingMode: "environment",
-        focusMode: "continuous",
-        width: { min: 640, ideal: 1280, max: 1920 }, // Android butuh ini biar tajam
-        height: { min: 480, ideal: 720, max: 1080 }
+        focusMode: "continuous", // Android Only
+        // Trik Zoom: Mencoba meminta zoom level jika browser support
+        advanced: [{ zoom: 2.0 }] 
     };
 
     const config = {
-      fps: 30,
-      qrbox: { width: 280, height: 200 }, // Kotak scan standar
+      fps: 30, // Wajib tinggi
+      qrbox: { width: 250, height: 250 }, // Kotak standar (jangan gepeng, iPhone lebih suka kotak)
       aspectRatio: 1.0,
+      disableFlip: false, // Jangan mirror
       formatsToSupport: [
-          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_128, // Paling penting untuk retail
           Html5QrcodeSupportedFormats.EAN_13,
           Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.UPC_A,
           Html5QrcodeSupportedFormats.QR_CODE
       ]
     };
@@ -85,21 +75,19 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
         cameraId,
         config,
         (decodedText) => {
-           // Sukses
+           // Sukses Scan
+           if (navigator.vibrate) navigator.vibrate(200);
            onScanSuccess(decodedText);
            stopScanner();
         },
-        () => {} // Abaikan error scan frame
+        () => {} // Abaikan frame kosong
       );
     } catch (err) {
       console.error("Start failed", err);
-      // Jika gagal start (biasanya karena constraint resolusi di HP jadul), coba mode basic
-      if (!isIOS) {
-          // Fallback tanpa constraint resolusi
-          try {
-             await html5QrCode.start(cameraId, { fps: 20, qrbox: 250 }, (t)=>onScanSuccess(t), ()=>{});
-          } catch(e) {}
-      }
+      // Fallback mode jika config di atas gagal (untuk HP lama)
+      try {
+         await html5QrCode.start(cameraId, { fps: 15, qrbox: 200 }, (t)=>onScanSuccess(t), ()=>{});
+      } catch(e) {}
     }
   };
 
@@ -115,9 +103,28 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-0 sm:p-4">
+      
+      {/* CSS Animasi Laser (Disuntik Langsung) */}
+      <style>{`
+        @keyframes scan-laser {
+            0% { top: 0; opacity: 0; box-shadow: 0 0 5px red; }
+            20% { opacity: 1; }
+            80% { opacity: 1; }
+            100% { top: 100%; opacity: 0; box-shadow: 0 0 20px red; }
+        }
+        .laser-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background: #ef4444; /* Merah */
+            box-shadow: 0 0 10px #ef4444;
+            animation: scan-laser 2s infinite linear;
+            left: 0;
+            z-index: 20;
+        }
+      `}</style>
+
       <div className="bg-slate-900 w-full max-w-md h-full flex flex-col relative">
-        
-        {/* Header */}
         <div className="p-4 bg-slate-800 flex justify-between items-center shrink-0 z-20">
           <h3 className="text-white font-bold flex items-center gap-2">
              <i className="fa-solid fa-qrcode text-blue-400"></i> Scanner
@@ -127,24 +134,31 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
           </button>
         </div>
 
-        {/* Camera View */}
         <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
-             <div id="reader-custom-view" className="w-full h-full"></div>
+             {/* VIDEO LIBRARY */}
+             <div id="reader-custom-view" className="w-full h-full object-cover"></div>
              
-             {/* Overlay Laser Merah */}
+             {/* OVERLAY ANIMASI (MANUAL DIV) */}
              <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
-                <div className="w-[80%] h-[200px] border-2 border-white/50 rounded-lg relative box-border">
-                    <div className="absolute w-full h-[2px] bg-red-500 shadow-[0_0_10px_red] top-1/2 animate-pulse"></div>
-                    <p className="absolute -bottom-8 w-full text-center text-white text-xs font-bold bg-black/50 py-1 rounded">
-                        Arahkan Barcode ke Sini
+                <div className="w-[260px] h-[260px] border-[3px] border-white/30 rounded-lg relative overflow-hidden">
+                    {/* Laser Merah */}
+                    <div className="laser-line"></div>
+                    
+                    {/* Sudut Penanda */}
+                    <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-blue-500"></div>
+                    <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-blue-500"></div>
+                    <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-blue-500"></div>
+                    <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-blue-500"></div>
+                    
+                    <p className="absolute bottom-2 w-full text-center text-white text-[10px] bg-black/40 py-1">
+                        Jaga Jarak 15-20cm
                     </p>
                 </div>
              </div>
         </div>
 
-        {/* Controls */}
         <div className="p-5 bg-slate-800 shrink-0 z-20">
-           <label className="text-slate-400 text-xs font-bold mb-2 block uppercase">Pilih Kamera:</label>
+           <label className="text-slate-400 text-xs font-bold mb-2 block uppercase">Kamera:</label>
            <div className="flex gap-2">
                <select 
                  className="flex-1 bg-white text-slate-900 font-bold p-3 rounded outline-none border-2 border-blue-500 text-sm"
@@ -152,7 +166,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
                  onChange={(e) => setSelectedCameraId(e.target.value)}
                >
                  {cameras.map((cam) => (
-                   <option key={cam.id} value={cam.id}>{cam.label || `Camera ${cam.id.slice(0,5)}`}</option>
+                   <option key={cam.id} value={cam.id}>{cam.label || `Cam ${cam.id.slice(0,4)}`}</option>
                  ))}
                </select>
                <button 
@@ -162,7 +176,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
                 <i className="fa-solid fa-rotate"></i>
                </button>
            </div>
-           {isIOS && <p className="text-[10px] text-yellow-500 mt-2 text-center">Mode iPhone (iOS) Aktif</p>}
+           {isIOS && <p className="text-[10px] text-yellow-500 mt-2 text-center">Tips iPhone: Jangan terlalu dekat (min 15cm)</p>}
         </div>
       </div>
     </div>
