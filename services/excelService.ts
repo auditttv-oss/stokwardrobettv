@@ -8,9 +8,9 @@ const findValue = (row: any, keywords: string[]): any => {
   return foundKey ? row[foundKey] : null;
 };
 
-// PEMBERSIH HARGA AGRESIF
+// PEMBERSIH HARGA AGRESIF (Hapus titik, koma, Rp, dll)
 const parsePrice = (price: any): number => {
-  if (typeof price === 'number') return Math.floor(price); // Pastikan bulat
+  if (typeof price === 'number') return Math.floor(price);
   
   if (typeof price === 'string') {
     // Hapus desimal nol di belakang (,00 atau .00)
@@ -29,6 +29,7 @@ export const parseExcelFile = async (file: File): Promise<any[]> => {
     reader.onload = (e) => {
       try {
         const data = e.target?.result;
+        // Import khusus agar jalan di Vercel
         const workbook = read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
@@ -52,7 +53,7 @@ export const parseExcelFile = async (file: File): Promise<any[]> => {
 
             return {
               barcode: cleanBarcode,
-              item_name: String(name).trim().replace(/['"]/g, ''), // Hapus kutip yang bikin error SQL
+              item_name: String(name).trim().replace(/['"]/g, ''), // Hapus kutip biar aman
               brand: String(brand).trim(),
               color: String(color).trim(),
               status: String(status).trim(),
@@ -60,7 +61,7 @@ export const parseExcelFile = async (file: File): Promise<any[]> => {
               price: parsePrice(priceRaw),
               is_scanned: false,
             };
-        }).filter(item => item !== null); // Hapus baris kosong/invalid
+        }).filter(item => item !== null);
 
         if (formattedData.length === 0) throw new Error("Tidak ada data valid.");
         resolve(formattedData);
