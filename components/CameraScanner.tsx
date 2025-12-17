@@ -7,183 +7,263 @@ interface CameraScannerProps {
 }
 
 export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onClose }) => {
+  // State Utama
   const [cameras, setCameras] = useState<any[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
-  const [cameraLabel, setCameraLabel] = useState<string>('Memuat kamera...');
   
+  // State Kontrol Kamera
+  const [torchOn, setTorchOn] = useState<boolean>(false);
+  const [canTorch, setCanTorch] = useState<boolean>(false);
+  const [zoom, setZoom] = useState<number>(1);
+  const [zoomCap, setZoomCap] = useState<{ min: number; max: number; step: number } | null>(null);
+  
+  // State UI
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [boxSize, setBoxSize] = useState({ width: 300, height: 150 });
+
+  // Refs
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const containerId = "reader-custom-view";
+  const trackRef = useRef<MediaStreamTrack | null>(null);
 
+  // 1. Hitung Ukuran Box Scanner agar Responsif
+  useEffect(() => {
+    const handleResize = () => {
+        const vw = Math.min(window.innerWidth, 600);
+        // Lebar 80% layar, Tinggi 50% dari lebar (persegi panjang untuk barcode)
+        setBoxSize({ width: Math.floor(vw * 0.8), height: Math.floor(vw * 0.5) });
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 2. Cek Kemampuan Kamera (Zoom & Torch)
+  const checkCapabilities = (track: MediaStreamTrack) => {
+    trackRef.current = track;
+    const caps: any = track.getCapabilities ? track.getCapabilities() : {};
+    
+    // Cek Torch
+    setCanTorch(!!caps.torch);
+
+    // Cek Zoom
+    if (caps.zoom) {
+      setZoomCap({
+        min: caps.zoom.min || 1,
+        max: Math.min(caps.zoom.max || 5, 5), // Batasi max zoom 5x saja
+        step: caps.zoom.step || 0.1
+      });
+      // Set default zoom agak maju (1.2x) untuk membantu inisiasi fokus
+      applyZoom(1.2, track);
+    } else {
+      setZoomCap(null);
+    }
+  };
+
+  const applyTorch = async (on: boolean) => {
+    const track: any = trackRef.current;
+    if (track && canTorch) {
+      try {
+        await track.applyConstraints({ advanced: [{ torch: on }] });
+        setTorchOn(on);
+      } catch (err) { console.warn(err); }
+    }
+  };
+
+  const applyZoom = async (value: number, trackParam?: MediaStreamTrack) => {
+    const track: any = trackParam || trackRef.current;
+    if (track && track.getCapabilities) {
+        const caps: any = track.getCapabilities();
+        if(caps.zoom) {
+            try {
+                await track.applyConstraints({ advanced: [{ zoom: value }] });
+                setZoom(value);
+            } catch (err) { console.warn(err); }
+        }
+    }
+  };
+
+  // 3. Init Scanner
   useEffect(() => {
     const initCamera = async () => {
       try {
-        await Html5Qrcode.getCameras(); // Trigger Permission
         const devices = await Html5Qrcode.getCameras();
-        
         if (devices && devices.length) {
-          // LOGIKA FILTER KAMERA IPHONE (ANTI ULTRA WIDE)
-          // Kita cari kamera belakang, TAPI buang yang ada tulisan 'Ultra' atau '0.5'
-          const backCameras = devices.filter(d => {
-              const label = d.label.toLowerCase();
-              return (label.includes('back') || label.includes('rear') || label.includes('belakang')) 
-                     && !label.includes('ultra') 
-                     && !label.includes('0.5');
-          });
+          setCameras(devices);
+          
+          // Logika Filter Kamera Belakang yang lebih cerdas
+          const backCameras = devices.filter(d => 
+             d.label.toLowerCase().includes('back') || 
+             d.label.toLowerCase().includes('belakang') || 
+             d.label.toLowerCase().includes('environment')
+          );
 
-          // Jika filter di atas kosong (misal nama kameranya aneh), ambil semua back camera
-          const finalCandidates = backCameras.length > 0 ? backCameras : devices.filter(d => d.label.toLowerCase().includes('back'));
-          
-          // Fallback terakhir: ambil kamera apapun
-          const validCameras = finalCandidates.length > 0 ? finalCandidates : devices;
-          
-          setCameras(devices); // Simpan semua untuk dropdown (opsional user ganti)
-          
-          // Pilih kandidat terbaik (biasanya yang terakhir di list adalah kamera utama High Res)
-          const bestCam = validCameras[validCameras.length - 1];
-          
+          // Pilih kamera belakang terakhir (biasanya kamera utama pada setup multi-cam)
+          // atau fallback ke device pertama
+          const bestCam = backCameras.length > 0 ? backCameras[backCameras.length - 1] : devices[0];
           setSelectedCameraId(bestCam.id);
-          setCameraLabel(bestCam.label);
+        } else {
+          alert("Kamera tidak ditemukan.");
         }
       } catch (err) {
-        alert("Gagal akses kamera. Pastikan izin browser diberikan.");
+        alert("Gagal akses kamera. Periksa izin browser.");
+      } finally {
+        setIsLoading(false);
       }
     };
-
     initCamera();
+
     return () => { stopScanner(); };
   }, []);
 
+  // 4. Start Scanner Logic
   const startScanner = async (cameraId: string) => {
     if (scannerRef.current) await stopScanner();
-    
-    // Reset Element
-    const oldEl = document.getElementById(containerId);
-    if(oldEl) oldEl.innerHTML = "";
 
     const html5QrCode = new Html5Qrcode(containerId);
     scannerRef.current = html5QrCode;
 
-    const config = {
-      fps: 30, // Max FPS
-      qrbox: { width: 300, height: 150 }, // Persegi Panjang (Cocok untuk Barcode Baju)
-      aspectRatio: 1.0,
-      disableFlip: false,
-      formatsToSupport: [
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.QR_CODE
-      ]
+    // KONFIGURASI KUNCI AGAR FOKUS BAGUS
+    const constraints = {
+        deviceId: { exact: cameraId },
+        // Resolusi Ideal: 720p (Cukup tajam, tapi ringan untuk autofocus)
+        width: { min: 640, ideal: 1280, max: 1920 },
+        height: { min: 480, ideal: 720, max: 1080 },
+        // Paksa mode fokus continuous
+        advanced: [{ focusMode: "continuous" }] 
     };
 
     try {
       await html5QrCode.start(
-        cameraId,
+        constraints,
         {
-           fps: 30,
-           qrbox: { width: 300, height: 150 },
-           // KHUSUS IOS: Resolusi Rendah = Lebih Cepat & Fokus
-           videoConstraints: {
-               width: 640, 
-               height: 480,
-               facingMode: "environment"
-           }
+          fps: 15, // FPS 15 lebih baik untuk Low Light & Fokus daripada 30
+          qrbox: boxSize,
+          aspectRatio: 1.0,
+          disableFlip: false,
+          formatsToSupport: [ 
+            Html5QrcodeSupportedFormats.CODE_128, 
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.QR_CODE 
+          ]
         },
         (decodedText) => {
-           if (navigator.vibrate) navigator.vibrate(200);
-           onScanSuccess(decodedText);
-           stopScanner();
+          if (navigator.vibrate) navigator.vibrate(200);
+          onScanSuccess(decodedText);
+          stopScanner();
         },
-        () => {}
+        () => {} // Ignore errors
       );
+
+      // Ambil Track untuk kontrol Zoom/Flash setelah kamera nyala
+      const videoElement = document.querySelector(`#${containerId} video`) as HTMLVideoElement;
+      if (videoElement && videoElement.srcObject) {
+         // Fix CSS Video agar full cover
+         videoElement.style.objectFit = "cover"; 
+         
+         const stream = videoElement.srcObject as MediaStream;
+         const track = stream.getVideoTracks()[0];
+         checkCapabilities(track);
+      }
+      
     } catch (err) {
-      console.error("Start failed", err);
-      // Retry Mode Basic jika gagal
+      console.error(err);
+      // Fallback jika constraints gagal (biasanya di laptop/hp lama)
       try {
-         await html5QrCode.start(cameraId, { fps: 20, qrbox: 250 }, (t)=>onScanSuccess(t), ()=>{});
-      } catch(e) {}
+        await html5QrCode.start(cameraId, { fps: 10, qrbox: 250 }, (t) => onScanSuccess(t), () => {});
+      } catch(e) { alert("Kamera gagal dimulai."); }
     }
   };
 
   const stopScanner = async () => {
-    if (scannerRef.current && scannerRef.current.isScanning) {
-      try { await scannerRef.current.stop(); scannerRef.current.clear(); } catch (e) {}
+    if (scannerRef.current?.isScanning) {
+      try { await scannerRef.current.stop(); scannerRef.current.clear(); } catch(e) {}
     }
   };
 
+  // Restart kamera jika ID berubah
   useEffect(() => {
     if (selectedCameraId) startScanner(selectedCameraId);
   }, [selectedCameraId]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-0 sm:p-4">
-      <div className="bg-slate-900 w-full max-w-md h-full flex flex-col relative">
+    <div className="fixed inset-0 z-50 flex flex-col bg-black">
+      {/* Header */}
+      <div className="bg-slate-900 p-4 flex justify-between items-center z-20 shadow-md">
+        <h3 className="text-white font-bold flex items-center gap-2">
+            <i className="fa-solid fa-qrcode text-blue-500"></i> Scan Barcode
+        </h3>
+        <button onClick={onClose} className="bg-slate-800 text-white w-10 h-10 rounded-full flex items-center justify-center hover:bg-slate-700">
+            <i className="fa-solid fa-xmark text-xl"></i>
+        </button>
+      </div>
+
+      {/* Main Scanner Area */}
+      <div className="flex-1 relative bg-black overflow-hidden flex items-center justify-center">
+         <div id="reader-custom-view" className="w-full h-full bg-black"></div>
+         
+         {/* Overlay UI */}
+         <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
+            {/* Box Hijau */}
+            <div 
+                style={{ width: boxSize.width, height: boxSize.height }} 
+                className="border-2 border-green-500 rounded-lg relative shadow-[0_0_0_100vmax_rgba(0,0,0,0.6)]"
+            >
+                <div className="absolute top-1/2 left-2 right-2 h-0.5 bg-red-500 animate-pulse shadow-[0_0_8px_red]"></div>
+            </div>
+            <p className="mt-8 text-white text-xs bg-black/50 px-3 py-1 rounded-full backdrop-blur-sm">
+                Jauhkan HP (20cm) & Gunakan Zoom
+            </p>
+         </div>
+
+         {isLoading && <div className="absolute inset-0 flex items-center justify-center bg-black z-30"><span className="text-white animate-pulse">Memuat Kamera...</span></div>}
+      </div>
+
+      {/* Control Panel (Zoom & Settings) */}
+      <div className="bg-slate-900 p-5 z-20 border-t border-slate-800 flex flex-col gap-4">
         
-        {/* Header */}
-        <div className="p-4 bg-slate-800 flex justify-between items-center shrink-0 z-20 shadow-md border-b border-slate-700">
-          <h3 className="text-white font-bold flex items-center gap-2">
-             <i className="fa-solid fa-qrcode text-blue-400"></i> Scanner
-          </h3>
-          <button onClick={onClose} className="bg-slate-700 text-white w-9 h-9 rounded-full flex items-center justify-center">
-            <i className="fa-solid fa-xmark"></i>
-          </button>
-        </div>
-
-        {/* Viewport */}
-        <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
-             <div id="reader-custom-view" className="w-full h-full object-cover"></div>
-             
-             {/* Overlay Laser Hijau (Lebih Kontras) */}
-             <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
-                <div className="w-[300px] h-[150px] border-[3px] border-green-400/50 rounded-lg relative box-border shadow-[0_0_50px_rgba(0,0,0,0.8)_inset]">
-                    {/* Garis Laser */}
-                    <div className="absolute w-full h-[2px] bg-green-400 shadow-[0_0_10px_#4ade80] top-1/2 animate-pulse"></div>
-                    
-                    {/* Pojokan */}
-                    <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-green-500"></div>
-                    <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-green-500"></div>
-                    <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-green-500"></div>
-                    <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-green-500"></div>
+        {/* ZOOM SLIDER - FITUR UTAMA PERBAIKAN FOKUS */}
+        {zoomCap && (
+            <div className="w-full px-2">
+                <div className="flex justify-between text-[10px] text-slate-400 font-bold uppercase mb-1">
+                    <span>Mundur</span>
+                    <span>Zoom: {zoom.toFixed(1)}x</span>
+                    <span>Dekat</span>
                 </div>
-             </div>
-             
-             <div className="absolute bottom-10 w-full text-center z-20">
-                 <p className="text-white text-xs font-bold bg-black/60 inline-block px-4 py-1 rounded-full">
-                    Jarak Optimal: 15cm - 20cm
-                 </p>
-             </div>
-        </div>
+                <input 
+                    type="range" 
+                    min={zoomCap.min} max={zoomCap.max} step={zoomCap.step} 
+                    value={zoom}
+                    onChange={(e) => applyZoom(parseFloat(e.target.value))}
+                    className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                />
+            </div>
+        )}
 
-        {/* Controls */}
-        <div className="p-5 bg-slate-800 shrink-0 z-20 border-t border-slate-700">
-           <div className="flex justify-between items-center mb-2">
-               <label className="text-slate-400 text-[10px] uppercase font-bold">Kamera Aktif</label>
-               <span className="text-green-400 text-[10px] font-bold animate-pulse">● LIVE</span>
-           </div>
-           
-           <div className="flex gap-2">
-               <select 
-                 className="flex-1 bg-white text-slate-900 font-bold p-3 rounded outline-none border-2 border-blue-500 text-xs"
-                 value={selectedCameraId}
-                 onChange={(e) => setSelectedCameraId(e.target.value)}
-               >
-                 {cameras.map((cam) => (
-                   <option key={cam.id} value={cam.id}>
-                     {cam.label.replace(/camera/gi, '').substring(0, 25)}...
-                   </option>
-                 ))}
-               </select>
-               <button 
-                onClick={() => { stopScanner().then(() => startScanner(selectedCameraId)); }}
-                className="bg-blue-600 text-white px-4 rounded font-bold"
-               >
-                <i className="fa-solid fa-rotate"></i>
-               </button>
-           </div>
-           <p className="text-[10px] text-slate-500 mt-2 text-center">
-             Menggunakan: {cameraLabel}
-           </p>
+        <div className="flex gap-3">
+             {/* Dropdown Kamera */}
+             <div className="relative flex-1">
+                <select 
+                    className="w-full bg-slate-800 text-white border border-slate-600 rounded-lg py-3 px-3 text-sm font-bold outline-none focus:border-blue-500 appearance-none"
+                    value={selectedCameraId}
+                    onChange={(e) => setSelectedCameraId(e.target.value)}
+                >
+                    {cameras.map(c => (
+                        <option key={c.id} value={c.id}>{c.label || 'Kamera'}</option>
+                    ))}
+                </select>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">▼</div>
+             </div>
+
+             {/* Tombol Flash */}
+             {canTorch && (
+                 <button 
+                    onClick={() => applyTorch(!torchOn)}
+                    className={`w-14 rounded-lg flex items-center justify-center text-xl transition-all ${torchOn ? 'bg-amber-400 text-black shadow-[0_0_15px_#fbbf24]' : 'bg-slate-800 text-slate-400 border border-slate-600'}`}
+                 >
+                    <i className="fa-solid fa-bolt"></i>
+                 </button>
+             )}
         </div>
       </div>
     </div>
