@@ -1,7 +1,7 @@
 import { supabase } from '../lib/supabaseClient';
 import { InventoryItem } from '../types';
 
-// 1. Ambil Statistik (Sangat Ringan: Hanya hitung jumlah tanpa load data)
+// 1. Ambil Statistik
 export const getInventoryStats = async () => {
   const { count: total, error: errTotal } = await supabase
     .from('inventory')
@@ -20,36 +20,30 @@ export const getInventoryStats = async () => {
   };
 };
 
-// 2. Helper: Ambil item berdasarkan barcode
+// 2. Helper: Ambil item by barcode
 export const getItemByBarcode = async (barcode: string): Promise<InventoryItem | null> => {
   const { data, error } = await supabase
     .from('inventory')
     .select('*')
     .eq('barcode', barcode)
-    .maybeSingle(); // Aman: return null jika tidak ada, tidak error
+    .maybeSingle();
   
   if (error) console.error("Get Item Error:", error);
   return data as InventoryItem;
 };
 
-// 3. PROSES SCAN (Critical Part)
+// 3. PROSES SCAN
 export const markItemAsScanned = async (barcode: string): Promise<InventoryItem> => {
-  // A. Cek keberadaan item dulu
   const item = await getItemByBarcode(barcode);
   
   if (!item) {
-    throw new Error("Item tidak ditemukan di database (Nihil)");
+    throw new Error("Item tidak ditemukan di database");
   }
 
-  // B. Cek status lokal (untuk feedback cepat)
   if (item.is_scanned) {
     throw new Error("Item sudah discan sebelumnya");
   }
 
-  // C. Update ke Database
-  // Kita tambahkan filter .eq('is_scanned', false) lagi di sini
-  // Ini teknik 'Optimistic Locking' agar jika ada orang lain yang scan
-  // di milidetik yang sama, transaksi ini akan gagal/kosong.
   const { data, error } = await supabase
     .from('inventory')
     .update({ 
@@ -57,31 +51,26 @@ export const markItemAsScanned = async (barcode: string): Promise<InventoryItem>
         scan_timestamp: Date.now() 
     })
     .eq('id', item.id)
-    .eq('is_scanned', false) // Double check di level database
+    .eq('is_scanned', false) 
     .select()
     .maybeSingle();
 
   if (error) throw error;
-  
-  // Jika data null setelah update, berarti keduluan orang lain scan
-  if (!data) {
-      throw new Error("Item baru saja discan oleh user lain");
-  }
+  if (!data) throw new Error("Item baru saja discan oleh user lain");
 
   return data as InventoryItem;
 };
 
-// 4. Data untuk Tabel (Hanya ambil 50 data terbaru agar HP enteng)
+// 4. Data untuk Tabel (Limit 50 agar ringan)
 export const fetchRecentInventory = async (searchQuery: string = ''): Promise<InventoryItem[]> => {
   let query = supabase
     .from('inventory')
     .select('*')
-    .order('scan_timestamp', { ascending: false, nullsFirst: false }) // Yang baru discan muncul diatas
-    .order('created_at', { ascending: false }) // Fallback sort
-    .limit(50); // LIMIT PENTING UNTUK PERFORMA
+    .order('scan_timestamp', { ascending: false, nullsFirst: false })
+    .order('created_at', { ascending: false }) 
+    .limit(50);
 
   if (searchQuery) {
-    // Search logic
     query = supabase
       .from('inventory')
       .select('*')
@@ -94,7 +83,7 @@ export const fetchRecentInventory = async (searchQuery: string = ''): Promise<In
   return data as InventoryItem[];
 };
 
-// 5. Upload Massal (Aman untuk 25.000 data)
+// 5. Upload Massal (Batch Insert)
 export const uploadBulkInventory = async (items: any[], onProgress: (percent: number) => void) => {
   const BATCH_SIZE = 1000; 
   const total = items.length;
@@ -102,46 +91,67 @@ export const uploadBulkInventory = async (items: any[], onProgress: (percent: nu
   for (let i = 0; i < total; i += BATCH_SIZE) {
     const chunk = items.slice(i, i + BATCH_SIZE);
     
-    // Upsert: Insert atau Update jika barcode sudah ada
     const { error } = await supabase
         .from('inventory')
         .upsert(chunk, { onConflict: 'barcode' });
     
-    if (error) throw new Error(`Gagal upload pada baris ${i}: ${error.message}`);
+    if (error) throw new Error(`Gagal upload baris ${i}: ${error.message}`);
     
-    // Update progress bar
     const progress = Math.min(100, Math.round(((i + chunk.length) / total) * 100));
     onProgress(progress);
   }
 };
 
-// 6. Reset Scan (Hanya ubah status jadi false)
-export const resetInventoryStatus = async () => {
-    const { error } = await supabase
-        .from('inventory')
-        .update({ is_scanned: false, scan_timestamp: null })
-        .neq('id', '00000000-0000-0000-0000-000000000000'); // Update semua baris
-    if (error) throw error;
-}
-
-// 7. Hapus Semua Data
 export const clearAllData = async () => {
     const { error } = await supabase
         .from('inventory')
         .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete semua baris
+        .neq('id', '00000000-0000-0000-0000-000000000000');
     if (error) throw error;
 }
 
-// 8. Export Data (Stream data agar tidak crash)
-export const fetchAllForExport = async (filterType: 'ALL' | 'SCANNED' | 'PENDING') => {
-    let query = supabase.from('inventory').select('*');
+// 6. EXPORT DATA (FIX 25.000 DATA)
+// Menggunakan teknik Pagination Loop agar menembus batas 1000 baris
+export const fetchAllForExport = async (
+    filterType: 'ALL' | 'SCANNED' | 'PENDING',
+    onProgress: (count: number) => void
+): Promise<InventoryItem[]> => {
+    let allItems: InventoryItem[] = [];
+    let hasMore = true;
+    let page = 0;
+    const PAGE_SIZE = 2000; // Ambil 2000 data per request (Aman & Cepat)
+
+    while (hasMore) {
+        let query = supabase.from('inventory').select('*');
+        
+        // Terapkan Filter
+        if (filterType === 'SCANNED') query = query.eq('is_scanned', true);
+        if (filterType === 'PENDING') query = query.eq('is_scanned', false);
+        
+        // Ambil range data (Misal: 0-1999, lalu 2000-3999, dst)
+        const { data, error } = await query
+            .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+            .order('id', { ascending: true }); // Order ID penting agar data konsisten
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+            // Gabungkan data
+            allItems = allItems.concat(data as InventoryItem[]);
+            
+            // Update progress ke UI
+            onProgress(allItems.length);
+
+            // Cek apakah data sudah habis
+            if (data.length < PAGE_SIZE) {
+                hasMore = false;
+            } else {
+                page++; // Lanjut ke halaman berikutnya
+            }
+        } else {
+            hasMore = false;
+        }
+    }
     
-    if (filterType === 'SCANNED') query = query.eq('is_scanned', true);
-    if (filterType === 'PENDING') query = query.eq('is_scanned', false);
-    
-    // Limit 30k cukup untuk CSV. Jika lebih, perlu teknik pagination advanced.
-    const { data, error } = await query.limit(30000); 
-    if (error) throw error;
-    return data as InventoryItem[];
+    return allItems;
 }
