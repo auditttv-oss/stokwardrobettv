@@ -1,29 +1,34 @@
 <!DOCTYPE html>
 <html lang="id">
   <head>
-    <meta charset="utf-8" />
+    <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Stock Opname Pro</title>
+    <title>SO Pro Application</title>
     
-    <!-- 1. Tailwind CSS (CDN - Agar tampilan rapi tanpa install ribet) -->
+    <!-- 1. Tailwind CSS (CDN) - Agar tampilan bagus tanpa setup ribet -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- 2. Font Awesome (Icon) -->
+    <!-- 2. Font Awesome Icons (CDN) - Agar ikon muncul -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
     
-    <!-- CSS Tambahan Kecil untuk Scrollbar -->
+    <!-- 3. CSS Reset Kecil (Scrollbar & Mobile Tap) -->
     <style>
+      /* Mempercantik Scrollbar */
       ::-webkit-scrollbar { width: 5px; height: 5px; }
       ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
       ::-webkit-scrollbar-track { background: transparent; }
-      body { -webkit-tap-highlight-color: transparent; }
+      
+      /* Menghapus highlight biru saat tap di HP */
+      body { -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
     </style>
   </head>
+  
   <body class="bg-slate-50 text-slate-800 antialiased overflow-hidden select-none">
-    <!-- Container Aplikasi React -->
+    <!-- Container Utama Aplikasi -->
     <div id="root"></div>
     
-    <!-- Entry Point Vite (JANGAN DIHAPUS) -->
+    <!-- PENTING: Menghubungkan ke Logic React (Vite Entry Point) -->
+    <!-- Jangan tambah script importmap lagi disini karena akan error -->
     <script type="module" src="/index.tsx"></script>
   </body>
 </html>
